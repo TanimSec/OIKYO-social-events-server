@@ -396,6 +396,178 @@ app.get('/api/joined-events', verifyToken, async (req, res) => {
 });
 
 // ==========================================
+// Manage Events Endpoints (Step S7)
+// ==========================================
+
+/**
+ * GET /api/manage-events
+ * Private: Requires valid JWT (verifyToken)
+ * Returns all events created by the logged-in user (creatorEmail === req.user.email)
+ */
+app.get('/api/manage-events', verifyToken, async (req, res) => {
+  try {
+    if (!eventsCollection) {
+      return res.status(503).json({ error: true, message: 'Database connection not ready' });
+    }
+
+    const creatorEmail = req.user.email;
+    const myEvents = await eventsCollection
+      .find({ creatorEmail })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    return res.status(200).json({
+      success: true,
+      count: myEvents.length,
+      events: myEvents,
+    });
+  } catch (error) {
+    console.error('Error fetching manage-events:', error);
+    return res.status(500).json({ error: true, message: 'Internal server error while fetching created events' });
+  }
+});
+
+/**
+ * PUT /api/events/:id
+ * Private: Requires valid JWT (verifyToken) + Creator Ownership Verification
+ * Updates an event after ensuring future date validity and ownership check
+ */
+app.put('/api/events/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: 'Invalid event ID format' });
+    }
+
+    if (!eventsCollection) {
+      return res.status(503).json({ error: true, message: 'Database connection not ready' });
+    }
+
+    // 1. Fetch the event to verify existence and check ownership
+    const existingEvent = await eventsCollection.findOne({ _id: new ObjectId(id) });
+    if (!existingEvent) {
+      return res.status(404).json({ error: true, message: 'Event not found' });
+    }
+
+    // 2. Strict Ownership Check
+    if (existingEvent.creatorEmail !== req.user.email) {
+      return res.status(403).json({
+        error: true,
+        message: 'Forbidden: You do not have permission to update this event. You can only edit events you created.',
+      });
+    }
+
+    const { title, description, eventType, thumbnail, location, eventDate } = req.body;
+
+    if (!title || !description || !eventType || !thumbnail || !location || !eventDate) {
+      return res.status(400).json({
+        error: true,
+        message: 'All fields (title, description, eventType, thumbnail, location, eventDate) are required',
+      });
+    }
+
+    // 3. Future Date Validation
+    const todayString = new Date().toISOString().split('T')[0];
+    const targetDateString = eventDate.split('T')[0];
+    if (targetDateString < todayString) {
+      return res.status(400).json({
+        error: true,
+        message: 'Event date must be in the future. Past dates cannot be set.',
+      });
+    }
+
+    // 4. Update Event in eventsCollection
+    const updatedFields = {
+      title: title.trim(),
+      description: description.trim(),
+      eventType: eventType.trim(),
+      thumbnail: thumbnail.trim(),
+      location: location.trim(),
+      eventDate: targetDateString,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await eventsCollection.updateOne({ _id: new ObjectId(id) }, { $set: updatedFields });
+
+    // 5. Keep joined events snapshots in sync
+    if (joinedEventsCollection) {
+      await joinedEventsCollection.updateMany(
+        { eventId: id },
+        {
+          $set: {
+            title: updatedFields.title,
+            description: updatedFields.description,
+            eventType: updatedFields.eventType,
+            thumbnail: updatedFields.thumbnail,
+            location: updatedFields.location,
+            eventDate: updatedFields.eventDate,
+          },
+        }
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Event updated successfully!',
+      event: { ...existingEvent, ...updatedFields },
+    });
+  } catch (error) {
+    console.error('Error updating event:', error);
+    return res.status(500).json({ error: true, message: 'Internal server error while updating event' });
+  }
+});
+
+/**
+ * DELETE /api/events/:id
+ * Private: Requires valid JWT (verifyToken) + Creator Ownership Verification
+ * Deletes an event only if the requester is the original creator
+ */
+app.delete('/api/events/:id', verifyToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: 'Invalid event ID format' });
+    }
+
+    if (!eventsCollection) {
+      return res.status(503).json({ error: true, message: 'Database connection not ready' });
+    }
+
+    // 1. Fetch event to verify existence and check ownership
+    const existingEvent = await eventsCollection.findOne({ _id: new ObjectId(id) });
+    if (!existingEvent) {
+      return res.status(404).json({ error: true, message: 'Event not found' });
+    }
+
+    // 2. Strict Ownership Check
+    if (existingEvent.creatorEmail !== req.user.email) {
+      return res.status(403).json({
+        error: true,
+        message: 'Forbidden: You do not have permission to delete this event. You can only delete events you created.',
+      });
+    }
+
+    // 3. Delete event from eventsCollection
+    await eventsCollection.deleteOne({ _id: new ObjectId(id) });
+
+    // 4. Cascade delete: remove any joined event records for this event
+    if (joinedEventsCollection) {
+      await joinedEventsCollection.deleteMany({ eventId: id });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Event deleted successfully!',
+    });
+  } catch (error) {
+    console.error('Error deleting event:', error);
+    return res.status(500).json({ error: true, message: 'Internal server error while deleting event' });
+  }
+});
+
+// ==========================================
 // Health Check Route
 // ==========================================
 app.get('/', (req, res) => {
