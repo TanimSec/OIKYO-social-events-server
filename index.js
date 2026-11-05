@@ -244,6 +244,50 @@ app.get('/api/events/upcoming', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/events/:id
+ * Public: Anyone can view a specific event's details
+ * Retrieves a single event by its 24-character hexadecimal MongoDB ObjectId
+ */
+app.get('/api/events/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 1. Validate if the provided id is a valid 24-hex-char MongoDB ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        error: true,
+        message: 'Invalid event ID format. Must be a valid 24-character ObjectId.',
+      });
+    }
+
+    // 2. Database connection check
+    if (!eventsCollection) {
+      return res.status(503).json({ error: true, message: 'Database connection not ready' });
+    }
+
+    const event = await eventsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!event) {
+      return res.status(404).json({
+        error: true,
+        message: 'Event not found with the specified ID',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      event,
+    });
+  } catch (error) {
+    console.error('Error fetching event details:', error);
+    return res.status(500).json({
+      error: true,
+      message: 'Internal server error while fetching event details',
+    });
+  }
+});
+
 // ==========================================
 // Health Check Route
 // ==========================================
