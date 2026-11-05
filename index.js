@@ -289,6 +289,113 @@ app.get('/api/events/:id', async (req, res) => {
 });
 
 // ==========================================
+// Joined Events Endpoints (Step S6)
+// ==========================================
+
+/**
+ * POST /api/joined-events
+ * Private: Requires valid JWT (verifyToken)
+ * Allows an authenticated user to join an event (prevents duplicate join)
+ */
+app.post('/api/joined-events', verifyToken, async (req, res) => {
+  try {
+    if (!joinedEventsCollection || !eventsCollection) {
+      return res.status(503).json({ error: true, message: 'Database connection not ready' });
+    }
+
+    const { eventId, userName } = req.body;
+
+    // 1. Validate eventId
+    if (!eventId || !ObjectId.isValid(eventId)) {
+      return res.status(400).json({
+        error: true,
+        message: 'A valid 24-character eventId is required to join an event',
+      });
+    }
+
+    // 2. Fetch the target event to verify existence and get accurate snapshot
+    const targetEvent = await eventsCollection.findOne({ _id: new ObjectId(eventId) });
+    if (!targetEvent) {
+      return res.status(404).json({
+        error: true,
+        message: 'The event you are trying to join does not exist',
+      });
+    }
+
+    // 3. Prevent duplicate join by the same user
+    const userEmail = req.user.email;
+    const existingJoin = await joinedEventsCollection.findOne({
+      eventId: eventId,
+      userEmail: userEmail,
+    });
+
+    if (existingJoin) {
+      return res.status(409).json({
+        error: true,
+        message: 'You have already joined this event!',
+      });
+    }
+
+    // 4. Store participation record
+    const participationRecord = {
+      eventId: targetEvent._id.toString(),
+      title: targetEvent.title,
+      description: targetEvent.description,
+      eventType: targetEvent.eventType,
+      thumbnail: targetEvent.thumbnail,
+      location: targetEvent.location,
+      eventDate: targetEvent.eventDate,
+      creatorEmail: targetEvent.creatorEmail,
+      userEmail: userEmail,
+      userName: userName ? userName.trim() : req.user.name || 'Volunteer',
+      joinedAt: new Date().toISOString(),
+    };
+
+    const result = await joinedEventsCollection.insertOne(participationRecord);
+
+    return res.status(201).json({
+      success: true,
+      message: 'Successfully joined the event!',
+      insertedId: result.insertedId,
+      joinedEvent: { ...participationRecord, _id: result.insertedId },
+    });
+  } catch (error) {
+    console.error('Error joining event:', error);
+    return res.status(500).json({ error: true, message: 'Internal server error while joining event' });
+  }
+});
+
+/**
+ * GET /api/joined-events
+ * Private: Requires valid JWT (verifyToken)
+ * Retrieves all events joined by the logged-in user, sorted ascending by eventDate
+ */
+app.get('/api/joined-events', verifyToken, async (req, res) => {
+  try {
+    if (!joinedEventsCollection) {
+      return res.status(503).json({ error: true, message: 'Database connection not ready' });
+    }
+
+    const userEmail = req.user.email;
+
+    // Fetch joined events for the logged in user, sorted ascending by eventDate
+    const joinedEvents = await joinedEventsCollection
+      .find({ userEmail: userEmail })
+      .sort({ eventDate: 1 })
+      .toArray();
+
+    return res.status(200).json({
+      success: true,
+      count: joinedEvents.length,
+      joinedEvents,
+    });
+  } catch (error) {
+    console.error('Error fetching joined events:', error);
+    return res.status(500).json({ error: true, message: 'Internal server error while fetching joined events' });
+  }
+});
+
+// ==========================================
 // Health Check Route
 // ==========================================
 app.get('/', (req, res) => {
