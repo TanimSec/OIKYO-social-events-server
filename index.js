@@ -121,6 +121,31 @@ const verifyToken = (req, res, next) => {
 };
 
 // ==========================================
+// Superadmin Helper
+// ==========================================
+/**
+ * Helper to check if an email possesses Superadmin privileges.
+ * Superadmins can view, edit, and delete ANY event across the platform.
+ */
+function isSuperadmin(email) {
+  if (!email) return false;
+  const normalized = email.toLowerCase().trim();
+  const superadminList = [
+    'jamat@amir.com',
+    'mail.tasnimrahman@gmail.com',
+    'admin@oikyo.org',
+  ];
+  if (process.env.SUPERADMIN_EMAIL) {
+    const envSuperadmins = process.env.SUPERADMIN_EMAIL
+      .split(',')
+      .map((e) => e.toLowerCase().trim())
+      .filter(Boolean);
+    superadminList.push(...envSuperadmins);
+  }
+  return superadminList.includes(normalized);
+}
+
+// ==========================================
 // Authentication / Token Routes
 // ==========================================
 
@@ -442,6 +467,7 @@ app.get('/api/joined-events', verifyToken, async (req, res) => {
  * GET /api/manage-events
  * Private: Requires valid JWT (verifyToken)
  * Returns all events created by the logged-in user (creatorEmail === req.user.email)
+ * If user is a superadmin, returns ALL platform events so they can manage/moderate everything.
  */
 app.get('/api/manage-events', verifyToken, async (req, res) => {
   try {
@@ -449,16 +475,22 @@ app.get('/api/manage-events', verifyToken, async (req, res) => {
       return res.status(503).json({ error: true, message: 'Database connection not ready' });
     }
 
-    const creatorEmail = req.user.email;
-    const myEvents = await eventsCollection
-      .find({ creatorEmail })
-      .sort({ createdAt: -1 })
+    const userEmail = req.user.email;
+    const userIsSuperadmin = isSuperadmin(userEmail);
+
+    // If superadmin, query all events. Otherwise, query only events created by user.
+    const query = userIsSuperadmin ? {} : { creatorEmail: userEmail };
+
+    const events = await eventsCollection
+      .find(query)
+      .sort({ createdAt: -1, eventDate: 1 })
       .toArray();
 
     return res.status(200).json({
       success: true,
-      count: myEvents.length,
-      events: myEvents,
+      count: events.length,
+      isSuperadmin: userIsSuperadmin,
+      events,
     });
   } catch (error) {
     console.error('Error fetching manage-events:', error);
@@ -468,7 +500,7 @@ app.get('/api/manage-events', verifyToken, async (req, res) => {
 
 /**
  * PUT /api/events/:id
- * Private: Requires valid JWT (verifyToken) + Creator Ownership Verification
+ * Private: Requires valid JWT (verifyToken) + Creator Ownership / Superadmin Verification
  * Updates an event after ensuring future date validity and ownership check
  */
 app.put('/api/events/:id', verifyToken, async (req, res) => {
@@ -489,11 +521,14 @@ app.put('/api/events/:id', verifyToken, async (req, res) => {
       return res.status(404).json({ error: true, message: 'Event not found' });
     }
 
-    // 2. Strict Ownership Check
-    if (existingEvent.creatorEmail !== req.user.email) {
+    // 2. Strict Ownership / Superadmin Check
+    const userEmail = req.user.email;
+    const hasPermission = existingEvent.creatorEmail === userEmail || isSuperadmin(userEmail);
+
+    if (!hasPermission) {
       return res.status(403).json({
         error: true,
-        message: 'Forbidden: You do not have permission to update this event. You can only edit events you created.',
+        message: 'Forbidden: You do not have permission to update this event. You can only edit events you created or manage as a superadmin.',
       });
     }
 
@@ -559,8 +594,8 @@ app.put('/api/events/:id', verifyToken, async (req, res) => {
 
 /**
  * DELETE /api/events/:id
- * Private: Requires valid JWT (verifyToken) + Creator Ownership Verification
- * Deletes an event only if the requester is the original creator
+ * Private: Requires valid JWT (verifyToken) + Creator Ownership / Superadmin Verification
+ * Deletes an event only if the requester is the original creator or a superadmin
  */
 app.delete('/api/events/:id', verifyToken, async (req, res) => {
   try {
@@ -580,11 +615,14 @@ app.delete('/api/events/:id', verifyToken, async (req, res) => {
       return res.status(404).json({ error: true, message: 'Event not found' });
     }
 
-    // 2. Strict Ownership Check
-    if (existingEvent.creatorEmail !== req.user.email) {
+    // 2. Strict Ownership / Superadmin Check
+    const userEmail = req.user.email;
+    const hasPermission = existingEvent.creatorEmail === userEmail || isSuperadmin(userEmail);
+
+    if (!hasPermission) {
       return res.status(403).json({
         error: true,
-        message: 'Forbidden: You do not have permission to delete this event. You can only delete events you created.',
+        message: 'Forbidden: You do not have permission to delete this event. You can only delete events you created or manage as a superadmin.',
       });
     }
 
