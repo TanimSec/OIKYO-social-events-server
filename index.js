@@ -8,7 +8,14 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  })
+);
 app.use(express.json());
 
 // MongoDB Connection Setup
@@ -20,6 +27,7 @@ let db;
 let eventsCollection;
 let joinedEventsCollection;
 let isDbConnected = false;
+let clientPromise = null;
 
 if (uri) {
   client = new MongoClient(uri, {
@@ -31,27 +39,58 @@ if (uri) {
   });
 }
 
-async function connectDB() {
+/**
+ * Ensures MongoDB connection is established and collections are initialized.
+ * Reuses connection across serverless invocations (Vercel Lambda) and local node process.
+ */
+async function ensureDB() {
+  if (isDbConnected && db && eventsCollection && joinedEventsCollection) {
+    return { db, eventsCollection, joinedEventsCollection };
+  }
   if (!uri) {
-    console.warn('⚠️ MONGODB_URI is not set in .env. Please configure your MongoDB Atlas connection string.');
-    return;
+    console.warn('⚠️ MONGODB_URI is not set in environment. Please configure your MongoDB Atlas connection string.');
+    return null;
   }
-  try {
-    await client.connect();
-    await client.db('admin').command({ ping: 1 });
-    db = client.db(dbName);
-    eventsCollection = db.collection('events');
-    joinedEventsCollection = db.collection('joinedEvents');
-    isDbConnected = true;
-    console.log(`✅ Connected successfully to MongoDB Atlas (Database: ${dbName})`);
-    console.log(`📁 Collections initialized: 'events', 'joinedEvents'`);
-  } catch (error) {
-    isDbConnected = false;
-    console.error('❌ Failed to connect to MongoDB Atlas:', error.message);
+  if (!client) {
+    client = new MongoClient(uri, {
+      serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
+      },
+    });
   }
+  if (!clientPromise) {
+    clientPromise = client.connect().then(async (c) => {
+      db = c.db(dbName);
+      eventsCollection = db.collection('events');
+      joinedEventsCollection = db.collection('joinedEvents');
+      isDbConnected = true;
+      console.log(`✅ Connected successfully to MongoDB Atlas (Database: ${dbName})`);
+      return c;
+    }).catch((err) => {
+      clientPromise = null;
+      isDbConnected = false;
+      console.error('❌ Failed to connect to MongoDB Atlas:', err.message);
+      throw err;
+    });
+  }
+  await clientPromise;
+  return { db, eventsCollection, joinedEventsCollection };
 }
 
-connectDB();
+// Immediately initiate background connection
+ensureDB().catch(() => {});
+
+// Serverless Middleware: Ensure DB is connected before processing requests
+app.use(async (req, res, next) => {
+  try {
+    await ensureDB();
+  } catch (err) {
+    // Continue so route handlers or health check can report specific DB status
+  }
+  next();
+});
 
 // ==========================================
 // JWT Verification Middleware
@@ -580,8 +619,10 @@ app.get('/', (req, res) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Server is running on port: ${port}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`Server is running on port: ${port}`);
+  });
+}
 
 module.exports = app;
