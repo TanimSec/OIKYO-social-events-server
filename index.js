@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 require('dotenv').config();
 
@@ -37,7 +38,6 @@ async function connectDB() {
   }
   try {
     await client.connect();
-    // Ping admin to verify connection
     await client.db('admin').command({ ping: 1 });
     db = client.db(dbName);
     eventsCollection = db.collection('events');
@@ -53,7 +53,68 @@ async function connectDB() {
 
 connectDB();
 
+// ==========================================
+// JWT Verification Middleware
+// ==========================================
+const verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  // 1. Check if Authorization header is present and properly formatted
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({
+      error: true,
+      message: 'Unauthorized access: No token provided or format is invalid',
+    });
+  }
+
+  // 2. Extract the token from 'Bearer <token>'
+  const token = authHeader.split(' ')[1];
+
+  // 3. Verify the token signature and expiration
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(403).json({
+        error: true,
+        message: 'Forbidden access: Token is invalid or has expired',
+      });
+    }
+
+    // 4. Attach decoded payload to request object for downstream handlers
+    req.user = decoded;
+    next();
+  });
+};
+
+// ==========================================
+// Authentication / Token Routes
+// ==========================================
+
+// Create/Sign JWT Token
+app.post('/api/jwt', (req, res) => {
+  const user = req.body;
+  if (!user || !user.email) {
+    return res.status(400).json({ error: true, message: 'User email is required' });
+  }
+
+  const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
+    expiresIn: '7d',
+  });
+
+  res.status(200).json({ success: true, token });
+});
+
+// Test Protected Route (Verifies that verifyToken is functional)
+app.get('/api/jwt-test', verifyToken, (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Access granted to protected route!',
+    user: req.user,
+  });
+});
+
+// ==========================================
 // Health Check Route
+// ==========================================
 app.get('/', (req, res) => {
   res.status(200).json({
     status: 'success',
