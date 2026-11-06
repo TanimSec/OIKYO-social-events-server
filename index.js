@@ -145,6 +145,14 @@ function isSuperadmin(email) {
   return superadminList.includes(normalized);
 }
 
+/**
+ * Safely escapes special regex characters to prevent ReDoS and regex syntax errors
+ */
+function escapeRegex(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // ==========================================
 // Authentication / Token Routes
 // ==========================================
@@ -156,7 +164,13 @@ app.post('/api/jwt', (req, res) => {
     return res.status(400).json({ error: true, message: 'User email is required' });
   }
 
-  const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
+  const cleanPayload = {
+    email: String(user.email).trim().toLowerCase(),
+    name: user.name ? String(user.name).trim() : '',
+  };
+
+  const secret = process.env.ACCESS_TOKEN_SECRET || 'social_development_events_jwt_secret_batch14_hermione';
+  const token = jwt.sign(cleanPayload, secret, {
     expiresIn: '7d',
   });
 
@@ -197,7 +211,16 @@ app.post('/api/events', verifyToken, async (req, res) => {
       });
     }
 
-    // 2. Future Date Validation (Enforce strictly today or future dates)
+    // 2. Thumbnail Protocol Validation
+    const cleanThumbnail = String(thumbnail).trim();
+    if (!cleanThumbnail.startsWith('http://') && !cleanThumbnail.startsWith('https://') && !cleanThumbnail.startsWith('/')) {
+      return res.status(400).json({
+        error: true,
+        message: 'Thumbnail must be a valid HTTP/HTTPS URL or a local relative path',
+      });
+    }
+
+    // 3. Future Date Validation (Enforce strictly today or future dates)
     const todayString = new Date().toISOString().split('T')[0];
     const targetDateString = eventDate.split('T')[0];
 
@@ -208,12 +231,12 @@ app.post('/api/events', verifyToken, async (req, res) => {
       });
     }
 
-    // 3. Assemble Event Document with JWT-verified creatorEmail
+    // 4. Assemble Event Document with JWT-verified creatorEmail
     const newEvent = {
       title: title.trim(),
       description: description.trim(),
       eventType: eventType.trim(),
-      thumbnail: thumbnail.trim(),
+      thumbnail: cleanThumbnail,
       location: location.trim(),
       eventDate: targetDateString,
       creatorEmail: req.user.email,
@@ -265,16 +288,18 @@ app.get('/api/events/upcoming', async (req, res) => {
       query.eventType = eventType.trim();
     }
 
-    // Search by title or location (Case-insensitive regex)
-    if (search && search.trim() !== '') {
+    // Search by title or location (Case-insensitive regex with safe character escaping)
+    if (search && typeof search === 'string' && search.trim() !== '') {
+      const safeSearch = escapeRegex(search.trim());
       query.$or = [
-        { title: { $regex: search.trim(), $options: 'i' } },
-        { location: { $regex: search.trim(), $options: 'i' } },
+        { title: { $regex: safeSearch, $options: 'i' } },
+        { location: { $regex: safeSearch, $options: 'i' } },
       ];
     }
 
-    const pageNum = parseInt(page, 10) || 1;
-    const limitNum = parseInt(limit, 10) || 0;
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const rawLimit = parseInt(limit, 10);
+    const limitNum = !isNaN(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 0;
     const skipNum = limitNum > 0 && pageNum > 0 ? (pageNum - 1) * limitNum : 0;
 
     // Execute query sorted by eventDate ascending
@@ -538,6 +563,15 @@ app.put('/api/events/:id', verifyToken, async (req, res) => {
       return res.status(400).json({
         error: true,
         message: 'All fields (title, description, eventType, thumbnail, location, eventDate) are required',
+      });
+    }
+
+    // Thumbnail URL validation
+    const cleanThumbnail = String(thumbnail).trim();
+    if (!cleanThumbnail.startsWith('http://') && !cleanThumbnail.startsWith('https://') && !cleanThumbnail.startsWith('/')) {
+      return res.status(400).json({
+        error: true,
+        message: 'Thumbnail must be a valid HTTP/HTTPS URL or a local relative path',
       });
     }
 
